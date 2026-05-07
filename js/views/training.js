@@ -1092,11 +1092,11 @@ function handleMultiChoiceClick(chosenIdx) {
     }
   });
 
-  // Vent et øjeblik så brugeren kan se feedback, gå så videre
+  // Vent så brugeren kan se feedback (2.5 sek), gå så videre
   setTimeout(() => {
     closeMultiModal();
     recordAnswer(correct);
-  }, 1400);
+  }, 2500);
 }
 
 

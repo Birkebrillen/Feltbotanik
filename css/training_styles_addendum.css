@@ -1,14 +1,15 @@
 /* =============================================================================
    TILFØJELSE TIL main.css — kopiér ind nederst i css/main.css
-   (Erstat tidligere training-tilføjelser hvis du allerede har lagt dem ind)
+   Erstat tidligere training-tilføjelser hvis du allerede har lagt dem ind.
+   Bruger høj specificitet og !important for at undgå konflikt med ældre regler.
    ============================================================================= */
 
 /* Luk-knap i answer-modal (×) */
-.answer-modal-content {
+.answer-modal .answer-modal-content {
   position: relative;
 }
 
-.answer-close {
+.answer-modal .answer-close {
   position: absolute;
   top: 0.5rem;
   right: 0.7rem;
@@ -23,96 +24,95 @@
   z-index: 2;
 }
 
-.answer-close:hover {
+.answer-modal .answer-close:hover {
   background: rgba(107, 68, 35, 0.1);
 }
 
 
-/* Multi-choice modal — fylder mere af skærmen, samme følelse som art-svar */
-.multi-modal-content {
-  width: min(92vw, 540px);
-  max-height: 90vh;
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  padding: 2.5rem 1.5rem 2rem;
+/* Multi-choice modal */
+.answer-modal .multi-modal-content {
+  width: min(94vw, 560px) !important;
+  max-height: 90vh !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: stretch !important;
+  padding: 2.5rem 1.5rem 2rem !important;
 }
 
-.multi-modal-title {
-  text-align: center;
-  margin: 0 0 1.75rem;
-  font-size: 1.15rem;
-  font-weight: 500;
-  color: #8a6d3b;
-  letter-spacing: 0.5px;
+.answer-modal .multi-modal-title {
+  text-align: center !important;
+  margin: 0 0 2rem !important;
+  font-size: 1.15rem !important;
+  font-weight: 500 !important;
+  color: #8a6d3b !important;
+  letter-spacing: 0.5px !important;
 }
 
 
-/* Multiple choice knapper — store, centrerede, med plads til at læse */
-.multi-choices {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  width: 100%;
+/* Multiple choice knapper — store, samme stil som artsnavn i klassisk svar */
+.answer-modal .multi-choices {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 1.25rem !important;
+  width: 100% !important;
 }
 
-.multi-choice-btn {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 4rem;
-  padding: 1.25rem 1.25rem;
-  font-family: inherit;
-  font-size: 1.5rem;
-  font-weight: 500;
-  line-height: 1.25;
-  background: #f5efe2;
-  color: #3d2e1c;
-  border: 2px solid #b8a989;
-  border-radius: 10px;
-  cursor: pointer;
-  text-align: center;
-  transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.1s;
+.answer-modal .multi-choice-btn {
+  display: flex !important;
+  width: 100% !important;
+  align-items: center !important;
+  justify-content: center !important;
+  min-height: 5rem !important;
+  padding: 1.5rem 1.25rem !important;
+  font-family: inherit !important;
+  font-size: 1.6rem !important;
+  font-weight: 600 !important;
+  line-height: 1.2 !important;
+  background: #f5efe2 !important;
+  color: #3d2e1c !important;
+  border: 2px solid #b8a989 !important;
+  border-radius: 10px !important;
+  cursor: pointer !important;
+  text-align: center !important;
+  transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.1s !important;
+  box-sizing: border-box !important;
 }
 
-.multi-choice-btn:hover:not(:disabled) {
-  background: #ede4cf;
-  border-color: #6b4423;
+.answer-modal .multi-choice-btn:hover:not(:disabled) {
+  background: #ede4cf !important;
+  border-color: #6b4423 !important;
 }
 
-.multi-choice-btn:active:not(:disabled) {
-  transform: scale(0.985);
+.answer-modal .multi-choice-btn:active:not(:disabled) {
+  transform: scale(0.985) !important;
 }
 
-.multi-choice-btn:disabled {
-  cursor: default;
+.answer-modal .multi-choice-btn:disabled {
+  cursor: default !important;
 }
 
-/* Rigtig svar — lyser dæmpet grønt, samme følelse som korrekt-feedback */
-.multi-choice-correct {
-  background: #d4e8c8 !important;
+/* Rigtig svar — lyser dæmpet grønt */
+.answer-modal .multi-choice-correct {
+  background: #c5e0b3 !important;
   border-color: #5b8a4a !important;
-  color: #2d4a1f !important;
-  font-weight: 600;
+  color: #243d18 !important;
 }
 
 /* Forkert valgt — lyser dæmpet rødt */
-.multi-choice-wrong {
-  background: #f0c8c8 !important;
+.answer-modal .multi-choice-wrong {
+  background: #ecbcbc !important;
   border-color: #a64a4a !important;
-  color: #5a1f1f !important;
-  font-weight: 600;
+  color: #4a1818 !important;
 }
 
-/* Gør tekst lidt mindre på smalle skærme */
+/* Smalle skærme */
 @media (max-width: 380px) {
-  .multi-choice-btn {
-    font-size: 1.3rem;
-    min-height: 3.5rem;
-    padding: 1rem;
+  .answer-modal .multi-choice-btn {
+    font-size: 1.35rem !important;
+    min-height: 4.25rem !important;
+    padding: 1.15rem 1rem !important;
   }
-  .multi-modal-content {
-    padding: 2rem 1rem 1.5rem;
+  .answer-modal .multi-modal-content {
+    padding: 2rem 1rem 1.5rem !important;
   }
 }

@@ -9,7 +9,7 @@
  * Bump CACHE_VERSION når app-koden opdateres.
  */
 
-const CACHE_VERSION = "v9";
+const CACHE_VERSION = "v10";
 const APP_CACHE = `botanik-app-${CACHE_VERSION}`;
 const DATA_CACHE = `botanik-data-${CACHE_VERSION}`;
 const IMAGE_CACHE = `botanik-images-${CACHE_VERSION}`;

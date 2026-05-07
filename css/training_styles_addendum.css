@@ -1,0 +1,74 @@
+/* =============================================================================
+   TILFØJELSE TIL main.css — kopiér ind nederst i css/main.css
+   ============================================================================= */
+
+/* Luk-knap i answer-modal (×) */
+.answer-modal-content {
+  position: relative;
+}
+
+.answer-close {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.7rem;
+  background: transparent;
+  border: none;
+  font-size: 1.6rem;
+  line-height: 1;
+  color: #6b4423;
+  cursor: pointer;
+  padding: 0.3rem 0.5rem;
+  border-radius: 4px;
+}
+
+.answer-close:hover {
+  background: rgba(107, 68, 35, 0.1);
+}
+
+
+/* Multiple choice knapper */
+.multi-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 1rem;
+  padding: 0 0.5rem;
+}
+
+.multi-choice-btn {
+  padding: 0.85rem 1rem;
+  font-size: 1.05rem;
+  font-family: inherit;
+  background: #f5efe2;
+  color: #3d2e1c;
+  border: 2px solid #b8a989;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.multi-choice-btn:hover:not(:disabled) {
+  background: #ede4cf;
+  border-color: #6b4423;
+}
+
+.multi-choice-btn:disabled {
+  cursor: default;
+}
+
+/* Rigtig svar — lyser grønt */
+.multi-choice-correct {
+  background: #c8e6c9 !important;
+  border-color: #2e7d32 !important;
+  color: #1b5e20 !important;
+  font-weight: 600;
+}
+
+/* Forkert valgt — lyser rødt */
+.multi-choice-wrong {
+  background: #ffcdd2 !important;
+  border-color: #c62828 !important;
+  color: #b71c1c !important;
+  font-weight: 600;
+}

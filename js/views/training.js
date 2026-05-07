@@ -6,11 +6,17 @@
  *   2. Aktiv træning ("/training/active") — flashcards
  *
  * Spiltyper:
- *   - arter            → flashcard med billeder + felttekst
+ *   - arter            → flashcard med billeder + felttekst (klassisk)
  *   - feltkendetegn    → vis Feltkendetegn-tekst, gæt arten
  *   - husk_feltkendetegn → vis artsnavn, gæt Feltkendetegn
- *   Hver kan køres i normal mode eller 20-pulje (afsluttet runde)
+ *   - multi            → multiple choice (3 valg fra samme familie)
+ *   Hver kan køres i normal mode eller 20-pulje (lærings-runde med gentagelse)
  *   + ny mode: "svaere" → kun arter markeret som svære
+ *
+ * 20-pulje med gentagelse:
+ *   Trækker 20 tilfældige arter. Forkert svar → arten gentages senere.
+ *   Score viser "X / 20 lært" (unikke arter gættet rigtigt).
+ *   Når alle 20 er lært, starter en ny runde automatisk.
  */
 
 import {
@@ -22,9 +28,8 @@ import {
 } from "../data.js";
 
 
-// Spil-tilstand der overlever mellem renders inden for samme session
 const state = {
-  gameType: "arter",       // "arter" | "feltkendetegn" | "husk_feltkendetegn"
+  gameType: "arter",       // "arter" | "feltkendetegn" | "husk_feltkendetegn" | "multi"
   roundMode: false,        // 20-pulje?
   hardOnly: false,         // kun "svære" arter?
   filters: {
@@ -38,12 +43,20 @@ const state = {
   currentFieldIndex: 0,
   scoreCorrect: 0,
   scoreTotal: 0,
-  // 20-pulje state
-  roundPool: [],
+  // Round-mode state
+  roundQueue: [],          // arter i kø — kommer fra front, forkerte tilbage til mid
+  roundLearned: new Set(), // titler der er gættet rigtigt (unikke)
   roundSize: 0,
+  // Modal
+  answerOpen: false,
+  // Multi-choice state
+  multiChoices: [],        // [{title, correct: bool}, ...]
+  multiAnswered: false,    // har brugeren valgt et svar?
 };
 
 const ROUND_POOL_SIZE = 20;
+const REINSERT_MIN = 3;    // forkert svar — sæt tilbage min antal pladser frem
+const REINSERT_MAX = 7;
 
 
 // =============================================================================
@@ -89,6 +102,7 @@ function renderSelectionScreen(container) {
           <h2>Spiltype</h2>
           <div class="game-type-grid">
             ${gameTypeCard("arter", "Arter", "Se billeder + tekst, gæt arten")}
+            ${gameTypeCard("multi", "Multiple choice", "Tre svar fra samme familie")}
             ${gameTypeCard("feltkendetegn", "Feltkendetegn", "Læs feltkendetegn, gæt arten")}
             ${gameTypeCard("husk_feltkendetegn", "Husk feltkendetegn", "Se art, husk feltkendetegnet")}
           </div>
@@ -98,7 +112,7 @@ function renderSelectionScreen(container) {
           <h2>Mode</h2>
           <label class="check-row">
             <input type="checkbox" id="round20" ${state.roundMode ? "checked" : ""} />
-            <span>20 ad gangen <span class="hint">(rundebaseret)</span></span>
+            <span>20 ad gangen <span class="hint">(gentages indtil alle er rigtige)</span></span>
           </label>
           ${hardCount > 0 ? `
             <label class="check-row">
@@ -145,7 +159,6 @@ function renderSelectionScreen(container) {
     </div>
   `;
 
-  // Bind interactions
   document.querySelectorAll("[data-game-type]").forEach(el => {
     el.addEventListener("click", () => {
       state.gameType = el.dataset.gameType;
@@ -215,7 +228,6 @@ function startGame() {
     const hardSet = new Set(getHardSpecies());
     pool = pool.filter(a => hardSet.has(a.Title));
   } else {
-    // Habitat- og familie-filtre
     if (state.filters.habitattype.length) {
       pool = pool.filter(a => {
         const ht = String(a.Habitattype || "");
@@ -232,6 +244,10 @@ function startGame() {
   if (state.gameType === "feltkendetegn" || state.gameType === "husk_feltkendetegn") {
     pool = pool.filter(a => isNonEmpty(a.Feltkendetegn));
   }
+  // Multi-choice: kræv at arten har billede (det er hele pointen)
+  if (state.gameType === "multi") {
+    pool = pool.filter(a => getImageUrls(a).length > 0);
+  }
 
   state.pool = pool;
   state.scoreCorrect = 0;
@@ -239,6 +255,9 @@ function startGame() {
   state.currentCard = null;
   state.currentFields = [];
   state.currentFieldIndex = 0;
+  state.answerOpen = false;
+  state.multiAnswered = false;
+  state.multiChoices = [];
 
   if (state.roundMode) {
     rebuildRoundPool();
@@ -247,8 +266,9 @@ function startGame() {
 
 
 function rebuildRoundPool() {
-  state.roundPool = shuffle(state.pool.slice()).slice(0, ROUND_POOL_SIZE);
-  state.roundSize = state.roundPool.length;
+  state.roundQueue = shuffle(state.pool.slice()).slice(0, ROUND_POOL_SIZE);
+  state.roundSize = state.roundQueue.length;
+  state.roundLearned = new Set();
   state.scoreCorrect = 0;
   state.scoreTotal = 0;
 }
@@ -275,11 +295,18 @@ function renderActiveGame(container) {
     return;
   }
 
-  // Vælg første kort
   if (!state.currentCard) {
     pickNextCard();
+    if (!state.currentCard) return; // Round-end blev kaldt
   }
 
+  // Multi-choice mode har sin egen layout
+  if (state.gameType === "multi") {
+    renderMultiChoiceGame(container);
+    return;
+  }
+
+  // Klassisk flashcard layout
   container.innerHTML = `
     <div class="view view-training-active">
       <header class="topbar">
@@ -305,6 +332,7 @@ function renderActiveGame(container) {
 
       <div id="answerModal" class="answer-modal hidden">
         <div class="answer-modal-content">
+          <button id="closeAnswerBtn" class="answer-close" aria-label="Luk svar">×</button>
           <h2 id="answerTitle"></h2>
           <p id="answerFamily" class="answer-family"></p>
           <div class="answer-actions">
@@ -320,6 +348,11 @@ function renderActiveGame(container) {
   renderCurrentField();
   updateScore();
   updateHardToggle();
+
+  // Hvis svaret skal være åbent (vedvarer mellem renders), genåbn det
+  if (state.answerOpen) {
+    openAnswer();
+  }
 }
 
 
@@ -327,17 +360,14 @@ function bindActiveGame() {
   const cardEl = document.getElementById("trainCard");
   const contentEl = document.getElementById("fieldContent");
 
-  // ---- Klik & dobbeltklik ----
-  // Single click → næste felt (eller åbn svar hvis ingen flere felter til at klikke gennem)
-  // Double click → åbn svar-modal
+  // Klik & dobbeltklik
   let clickTimer = null;
   cardEl.addEventListener("click", e => {
     if (e.target.closest("button")) return;
-    // Vent for at se om det er et dobbeltklik
     if (clickTimer) {
       clearTimeout(clickTimer);
       clickTimer = null;
-      openAnswer();  // dobbeltklik = vis svar
+      openAnswer();
       return;
     }
     clickTimer = setTimeout(() => {
@@ -346,10 +376,23 @@ function bindActiveGame() {
     }, 220);
   });
 
-  // ---- Knapper ----
   document.getElementById("prevFieldBtn").addEventListener("click", prevField);
   document.getElementById("nextFieldBtn").addEventListener("click", nextField);
-  document.getElementById("showAnswerBtn").addEventListener("click", openAnswer);
+
+  // Vis/skjul svar (toggle)
+  const showBtn = document.getElementById("showAnswerBtn");
+  showBtn.addEventListener("click", () => {
+    if (state.answerOpen) {
+      closeAnswer();
+    } else {
+      openAnswer();
+    }
+  });
+
+  // Luk-knap i modalen
+  document.getElementById("closeAnswerBtn").addEventListener("click", () => {
+    closeAnswer();
+  });
 
   document.getElementById("answerWrongBtn").addEventListener("click", () => {
     recordAnswer(false);
@@ -364,7 +407,6 @@ function bindActiveGame() {
     updateHardToggle();
   });
 
-  // ---- Swipe-gestures ----
   setupSwipeGestures(cardEl, contentEl);
 }
 
@@ -372,11 +414,6 @@ function bindActiveGame() {
 // =============================================================================
 // SWIPE GESTURES
 // =============================================================================
-//   - venstre/højre swipe         → forrige/næste felt
-//   - swipe op (fra bund)         → svar = rigtig, næste kort
-//   - swipe ned (fra top)         → svar = forkert, næste kort
-//
-// Swipe-logik kopieret fra den eksisterende app, tilpasset modulet.
 
 function setupSwipeGestures(cardEl, contentEl) {
   const thresholdX = 40;
@@ -430,7 +467,6 @@ function setupSwipeGestures(cardEl, contentEl) {
     const absDx = Math.abs(dx);
     const absDy = Math.abs(dy);
 
-    // Forhindrer pull-to-refresh hvis brugeren swiper ned fra toppen
     if (
       touchStartInTopZone &&
       dy > 0 &&
@@ -464,7 +500,6 @@ function setupSwipeGestures(cardEl, contentEl) {
       absDx < maxSideDrift
     ) {
       if (contentEl.scrollTop === 0) {
-        // Hvis modal er åben, registrér og luk
         if (!isAnswerModalOpen()) openAnswer();
         recordAnswer(true);
         reset();
@@ -487,7 +522,6 @@ function setupSwipeGestures(cardEl, contentEl) {
       }
     }
 
-    // Felter: venstre/højre
     if (absDx > absDy && absDx > thresholdX) {
       if (dx > 0) prevField();
       else nextField();
@@ -498,7 +532,6 @@ function setupSwipeGestures(cardEl, contentEl) {
 
   function onTouchCancel() { reset(); }
 
-  // Tilføj listeners
   [cardEl, contentEl].forEach(el => {
     if (!el) return;
     el.addEventListener("touchstart", onTouchStart, { passive: true });
@@ -524,15 +557,20 @@ function updateHardToggle() {
 }
 
 
+// =============================================================================
+// KORTVALG OG FELT-OPBYGNING
+// =============================================================================
+
 function pickNextCard() {
   let card;
   if (state.roundMode) {
-    if (state.roundPool.length === 0) {
-      // Runde færdig — vis afslutning og rebuild
+    if (state.roundQueue.length === 0) {
+      // Alle 20 lært!
       showRoundEnd();
+      state.currentCard = null;
       return;
     }
-    card = state.roundPool.shift();
+    card = state.roundQueue.shift();
   } else {
     card = state.pool[Math.floor(Math.random() * state.pool.length)];
   }
@@ -540,34 +578,17 @@ function pickNextCard() {
   state.currentCard = card;
   state.currentFields = buildFieldsForCard(card);
   state.currentFieldIndex = 0;
+  state.answerOpen = false;
+  state.multiAnswered = false;
+
+  // For multi-choice: byg svarmuligheder
+  if (state.gameType === "multi") {
+    state.multiChoices = buildMultiChoices(card);
+  }
 
   if (!state.currentFields.length) {
     state.currentFields = [{ type: "text", label: "Info", text: "Ingen data for denne art." }];
   }
-}
-
-
-function showRoundEnd() {
-  const main = document.querySelector(".training-main");
-  if (!main) return;
-  main.innerHTML = `
-    <div class="round-end">
-      <h2>Runde færdig!</h2>
-      <p class="big-score">${state.scoreCorrect} / ${state.scoreTotal}</p>
-      <div class="train-actions">
-        <button id="newRoundBtn" class="btn-primary">Ny runde</button>
-        <button id="backToSelectBtn" class="btn-secondary">Skift spiltype</button>
-      </div>
-    </div>
-  `;
-  document.getElementById("newRoundBtn").addEventListener("click", () => {
-    rebuildRoundPool();
-    state.currentCard = null;
-    renderActiveGame(document.getElementById("app"));
-  });
-  document.getElementById("backToSelectBtn").addEventListener("click", () => {
-    window.location.hash = "#/training";
-  });
 }
 
 
@@ -603,12 +624,11 @@ function buildFieldsForCard(card) {
     return fields;
   }
 
-  // Default: arter — vis billeder + tekstfelter
+  // Default: arter eller multi — vis billeder + tekstfelter
   imgs.slice(0, 5).forEach((src, i) => {
     fields.push({ type: "image", label: `Billede ${i + 1}`, src });
   });
 
-  // Feltkendetegn FØRST blandt tekstfelter (det vigtigste i felten)
   if (isNonEmpty(card.Feltkendetegn)) {
     fields.push({
       type: "text",
@@ -617,7 +637,6 @@ function buildFieldsForCard(card) {
     });
   }
 
-  // Resten af tekstfelterne — samme rækkefølge som den eksisterende app
   const textFields = [
     { keys: ["Bog_Habitat", "Naturbasen_Habitat", "Habitat"], label: "Habitat" },
     { keys: ["Bog_Beskrivelse", "Naturbasen_Kendetegn", "Beskrivelser"], label: "Beskrivelse" },
@@ -661,7 +680,6 @@ function renderCurrentField() {
     contentEl.innerHTML = `<p>${escapeHtml(field.text)}</p>`;
   }
 
-  // Opdater progress hint
   const hint = document.getElementById("trainHint");
   if (hint) {
     hint.textContent = `${state.currentFieldIndex + 1} / ${state.currentFields.length}  ·  ← swipe →  felt   ·  ↑ rigtig   ·  ↓ forkert`;
@@ -683,14 +701,19 @@ function prevField() {
 }
 
 
+// =============================================================================
+// SVAR-MODAL — toggle (åben/luk)
+// =============================================================================
+
 function openAnswer() {
   if (!state.currentCard) return;
   const modal = document.getElementById("answerModal");
   const titleEl = document.getElementById("answerTitle");
   const familyEl = document.getElementById("answerFamily");
+  const showBtn = document.getElementById("showAnswerBtn");
+  if (!modal) return;
 
   if (state.gameType === "husk_feltkendetegn") {
-    // Vis Feltkendetegn som svar
     const fk = state.currentCard.Feltkendetegn;
     titleEl.textContent = isNonEmpty(fk) ? String(fk).trim() : "Ingen feltkendetegn";
     familyEl.textContent = "";
@@ -706,6 +729,17 @@ function openAnswer() {
     }
   }
   modal.classList.remove("hidden");
+  state.answerOpen = true;
+  if (showBtn) showBtn.textContent = "Skjul svar";
+}
+
+
+function closeAnswer() {
+  const modal = document.getElementById("answerModal");
+  const showBtn = document.getElementById("showAnswerBtn");
+  if (modal) modal.classList.add("hidden");
+  state.answerOpen = false;
+  if (showBtn) showBtn.textContent = "Vis svar";
 }
 
 
@@ -713,14 +747,79 @@ function recordAnswer(correct) {
   state.scoreTotal += 1;
   if (correct) state.scoreCorrect += 1;
 
-  // Luk modal
-  document.getElementById("answerModal").classList.add("hidden");
+  // I round-mode: håndter learnings + gentagelse
+  if (state.roundMode) {
+    const title = state.currentCard.Title;
+    if (correct) {
+      state.roundLearned.add(title);
+    } else {
+      // Forkert — sæt arten tilbage i køen et tilfældigt sted (3-7 frem)
+      requeueCardForLater(state.currentCard);
+    }
+  }
 
-  // Næste kort
+  closeAnswer();
+
   pickNextCard();
-  renderCurrentField();
-  updateScore();
-  updateHardToggle();
+  if (state.currentCard) {
+    renderCurrentField();
+    updateScore();
+    updateHardToggle();
+  }
+}
+
+
+/**
+ * Indsæt arten tilbage i roundQueue på en tilfældig position 3-7 frem
+ * (eller bagest hvis køen er kortere). Kort tilbage = mere intens gentagelse.
+ */
+function requeueCardForLater(card) {
+  const q = state.roundQueue;
+  if (q.length <= REINSERT_MIN) {
+    q.push(card);
+    return;
+  }
+  const max = Math.min(q.length, REINSERT_MAX);
+  const min = Math.min(q.length, REINSERT_MIN);
+  const pos = Math.floor(Math.random() * (max - min + 1)) + min;
+  q.splice(pos, 0, card);
+}
+
+
+function showRoundEnd() {
+  const main = document.querySelector(".training-main");
+  if (!main) return;
+
+  // Auto-start ny runde efter kort delay (med mulighed for at afbryde)
+  main.innerHTML = `
+    <div class="round-end">
+      <h2>🎉 Runde gennemført!</h2>
+      <p class="big-score">${state.roundLearned.size} / ${state.roundSize} lært</p>
+      <p class="hint">Forsøg i alt: ${state.scoreTotal} (${state.scoreTotal - state.roundLearned.size} gentagelser)</p>
+      <p class="hint" id="autoStartHint">Ny runde starter om 3 sekunder...</p>
+      <div class="train-actions">
+        <button id="newRoundBtn" class="btn-primary">Ny runde nu</button>
+        <button id="backToSelectBtn" class="btn-secondary">Skift spiltype</button>
+      </div>
+    </div>
+  `;
+
+  let autoStartTimer = setTimeout(() => {
+    rebuildRoundPool();
+    state.currentCard = null;
+    renderActiveGame(document.getElementById("app"));
+  }, 3000);
+
+  document.getElementById("newRoundBtn").addEventListener("click", () => {
+    clearTimeout(autoStartTimer);
+    rebuildRoundPool();
+    state.currentCard = null;
+    renderActiveGame(document.getElementById("app"));
+  });
+  document.getElementById("backToSelectBtn").addEventListener("click", () => {
+    clearTimeout(autoStartTimer);
+    window.location.hash = "#/training";
+  });
 }
 
 
@@ -728,7 +827,7 @@ function updateScore() {
   const el = document.getElementById("scoreBadge");
   if (!el) return;
   if (state.roundMode) {
-    el.textContent = `${state.scoreTotal}/${state.roundSize}`;
+    el.textContent = `${state.roundLearned.size} / ${state.roundSize} lært`;
   } else {
     el.textContent = `${state.scoreCorrect}/${state.scoreTotal}`;
   }
@@ -744,6 +843,176 @@ function updateScore() {
 
 
 // =============================================================================
+// MULTIPLE CHOICE MODE
+// =============================================================================
+
+/**
+ * Byg 3 valgmuligheder: 1 rigtig + 2 fra samme familie. Fallback: tilfældige.
+ */
+function buildMultiChoices(card) {
+  const { arter } = getData();
+  const correctTitle = card.Title;
+  const familie = card.familie || card.Familie;
+
+  let candidates = [];
+  if (familie) {
+    candidates = arter.filter(a =>
+      (a.familie || a.Familie) === familie &&
+      a.Title !== correctTitle &&
+      a.niveau === card.niveau   // bland ikke arter og slægter sammen
+    );
+  }
+
+  // Fallback: tilfældige hvis ikke nok i familien
+  if (candidates.length < 2) {
+    const others = arter.filter(a =>
+      a.Title !== correctTitle &&
+      a.niveau === card.niveau
+    );
+    const need = 2 - candidates.length;
+    const extras = shuffle(others).slice(0, need);
+    candidates = candidates.concat(extras);
+  }
+
+  // Vælg 2 distractors
+  const distractors = shuffle(candidates).slice(0, 2);
+
+  // Saml + bland
+  const choices = [
+    { title: correctTitle, correct: true },
+    { title: distractors[0]?.Title || "?", correct: false },
+    { title: distractors[1]?.Title || "?", correct: false },
+  ];
+  return shuffle(choices);
+}
+
+
+function renderMultiChoiceGame(container) {
+  container.innerHTML = `
+    <div class="view view-training-active">
+      <header class="topbar">
+        <a href="#/training" class="topbar-back">← Skift</a>
+        <h1 class="topbar-title">${gameTypeLabel("multi")}${state.hardOnly ? " · Svære" : ""}</h1>
+        <button id="markHardBtn" class="hard-toggle" aria-label="Marker som svær">☆</button>
+      </header>
+
+      <main class="training-main">
+        <div class="train-card" id="trainCard">
+          <div class="score-badge" id="scoreBadge">0/0</div>
+          <div class="train-field-label" id="fieldLabel"></div>
+          <div class="train-field-content" id="fieldContent"></div>
+          <div class="train-hint" id="trainHint">Tap for næste felt — vælg svaret nedenfor</div>
+        </div>
+
+        <div class="multi-choices" id="multiChoices"></div>
+      </main>
+    </div>
+  `;
+
+  bindMultiChoiceGame();
+  renderCurrentField();
+  renderMultiChoices();
+  updateScore();
+  updateHardToggle();
+}
+
+
+function bindMultiChoiceGame() {
+  const cardEl = document.getElementById("trainCard");
+  const contentEl = document.getElementById("fieldContent");
+
+  // Klik på kort = næste felt (kort-rotation)
+  cardEl.addEventListener("click", e => {
+    if (e.target.closest("button")) return;
+    nextField();
+  });
+
+  document.getElementById("markHardBtn").addEventListener("click", () => {
+    if (!state.currentCard) return;
+    toggleHardSpecies(state.currentCard.Title);
+    updateHardToggle();
+  });
+
+  // Swipe kun for felt-rotation (venstre/højre)
+  // Multi-choice bruger ikke op/ned for rigtig/forkert
+  setupSimpleSwipe(cardEl, contentEl);
+}
+
+
+function setupSimpleSwipe(cardEl, contentEl) {
+  // Venstre/højre swipe → forrige/næste felt
+  const thresholdX = 40;
+  let startX = null, startY = null;
+
+  cardEl.addEventListener("touchstart", e => {
+    if (e.touches.length !== 1) { startX = null; return; }
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+  }, { passive: true });
+
+  cardEl.addEventListener("touchend", e => {
+    if (startX === null) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - startX;
+    const dy = t.clientY - startY;
+    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > thresholdX) {
+      if (dx > 0) prevField();
+      else nextField();
+    }
+    startX = null;
+  }, { passive: true });
+}
+
+
+function renderMultiChoices() {
+  const wrap = document.getElementById("multiChoices");
+  if (!wrap) return;
+  wrap.innerHTML = state.multiChoices.map((c, i) => `
+    <button type="button" class="multi-choice-btn" data-idx="${i}">
+      ${escapeHtml(c.title)}
+    </button>
+  `).join("");
+
+  wrap.querySelectorAll(".multi-choice-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      if (state.multiAnswered) return;
+      const idx = parseInt(btn.dataset.idx, 10);
+      handleMultiChoiceClick(idx);
+    });
+  });
+}
+
+
+function handleMultiChoiceClick(chosenIdx) {
+  state.multiAnswered = true;
+  const wrap = document.getElementById("multiChoices");
+  const buttons = wrap.querySelectorAll(".multi-choice-btn");
+
+  const chosen = state.multiChoices[chosenIdx];
+  const correct = chosen.correct;
+
+  // Markér visuelt: grøn for rigtigt svar, rød for forkert valgt
+  buttons.forEach((btn, i) => {
+    const c = state.multiChoices[i];
+    btn.disabled = true;
+    if (c.correct) {
+      btn.classList.add("multi-choice-correct");
+    } else if (i === chosenIdx) {
+      btn.classList.add("multi-choice-wrong");
+    }
+  });
+
+  // Vent et øjeblik så brugeren kan se feedback, gå så videre
+  setTimeout(() => {
+    recordAnswer(correct);
+    if (state.currentCard) {
+      renderMultiChoices();
+    }
+  }, 1200);
+}
+
+
+// =============================================================================
 // HJÆLPERE
 // =============================================================================
 
@@ -752,6 +1021,7 @@ function gameTypeLabel(t) {
     arter: "Arter",
     feltkendetegn: "Feltkendetegn",
     husk_feltkendetegn: "Husk feltkendetegn",
+    multi: "Multiple choice",
   })[t] || t;
 }
 

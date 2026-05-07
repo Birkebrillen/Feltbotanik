@@ -244,9 +244,11 @@ function startGame() {
   if (state.gameType === "feltkendetegn" || state.gameType === "husk_feltkendetegn") {
     pool = pool.filter(a => isNonEmpty(a.Feltkendetegn));
   }
-  // Multi-choice: kræv at arten har billede (det er hele pointen)
+  // Multi-choice: kræver at vi kan finde mindst 2 distractors fra samme
+  // slægt eller familie. Vi prøver at finde dem her — hvis arten ikke har
+  // tilstrækkelige distractors, springes den over.
   if (state.gameType === "multi") {
-    pool = pool.filter(a => getImageUrls(a).length > 0);
+    pool = pool.filter(a => hasEnoughDistractors(a, arter));
   }
 
   state.pool = pool;
@@ -300,13 +302,13 @@ function renderActiveGame(container) {
     if (!state.currentCard) return; // Round-end blev kaldt
   }
 
-  // Multi-choice mode har sin egen layout
-  if (state.gameType === "multi") {
-    renderMultiChoiceGame(container);
-    return;
-  }
+  // Multi-choice mode bruger SAMME flashcard layout som arter-mode,
+  // men med en "Vis svarmuligheder"-knap der åbner en modal med 3 valg.
 
   // Klassisk flashcard layout
+  const isMulti = state.gameType === "multi";
+  const showAnswerLabel = isMulti ? "Vis svarmuligheder" : "Vis svar";
+
   container.innerHTML = `
     <div class="view view-training-active">
       <header class="topbar">
@@ -325,32 +327,46 @@ function renderActiveGame(container) {
 
         <div class="train-actions">
           <button id="prevFieldBtn" class="btn-secondary">← Forrige</button>
-          <button id="showAnswerBtn" class="btn-primary">Vis svar</button>
+          <button id="showAnswerBtn" class="btn-primary">${showAnswerLabel}</button>
           <button id="nextFieldBtn" class="btn-secondary">Næste →</button>
         </div>
       </main>
 
-      <div id="answerModal" class="answer-modal hidden">
-        <div class="answer-modal-content">
-          <button id="closeAnswerBtn" class="answer-close" aria-label="Luk svar">×</button>
-          <h2 id="answerTitle"></h2>
-          <p id="answerFamily" class="answer-family"></p>
-          <div class="answer-actions">
-            <button id="answerWrongBtn" class="btn-wrong">✗ Forkert</button>
-            <button id="answerRightBtn" class="btn-right">✓ Rigtig</button>
+      ${isMulti ? `
+        <div id="multiModal" class="answer-modal hidden">
+          <div class="answer-modal-content multi-modal-content">
+            <button id="closeMultiBtn" class="answer-close" aria-label="Luk svarmuligheder">×</button>
+            <h2 class="multi-modal-title">Hvilken art er det?</h2>
+            <div id="multiChoices" class="multi-choices"></div>
           </div>
         </div>
-      </div>
+      ` : `
+        <div id="answerModal" class="answer-modal hidden">
+          <div class="answer-modal-content">
+            <button id="closeAnswerBtn" class="answer-close" aria-label="Luk svar">×</button>
+            <h2 id="answerTitle"></h2>
+            <p id="answerFamily" class="answer-family"></p>
+            <div class="answer-actions">
+              <button id="answerWrongBtn" class="btn-wrong">✗ Forkert</button>
+              <button id="answerRightBtn" class="btn-right">✓ Rigtig</button>
+            </div>
+          </div>
+        </div>
+      `}
     </div>
   `;
 
-  bindActiveGame();
+  if (isMulti) {
+    bindMultiChoiceGame();
+  } else {
+    bindActiveGame();
+  }
   renderCurrentField();
   updateScore();
   updateHardToggle();
 
   // Hvis svaret skal være åbent (vedvarer mellem renders), genåbn det
-  if (state.answerOpen) {
+  if (state.answerOpen && !isMulti) {
     openAnswer();
   }
 }
@@ -563,16 +579,37 @@ function updateHardToggle() {
 
 function pickNextCard() {
   let card;
-  if (state.roundMode) {
-    if (state.roundQueue.length === 0) {
-      // Alle 20 lært!
-      showRoundEnd();
+  let safetyCounter = 0;
+  while (true) {
+    safetyCounter++;
+    if (safetyCounter > 100) {
+      // Sikkerhedsbræk — burde aldrig ske
+      console.error("[training] pickNextCard: kunne ikke finde gyldigt kort");
       state.currentCard = null;
       return;
     }
-    card = state.roundQueue.shift();
-  } else {
-    card = state.pool[Math.floor(Math.random() * state.pool.length)];
+
+    if (state.roundMode) {
+      if (state.roundQueue.length === 0) {
+        showRoundEnd();
+        state.currentCard = null;
+        return;
+      }
+      card = state.roundQueue.shift();
+    } else {
+      card = state.pool[Math.floor(Math.random() * state.pool.length)];
+    }
+
+    // For multi-choice: sikr at vi kan bygge svarmuligheder
+    if (state.gameType === "multi") {
+      const choices = buildMultiChoices(card);
+      if (!choices) {
+        // Spring over og prøv næste
+        continue;
+      }
+      state.multiChoices = choices;
+    }
+    break;
   }
 
   state.currentCard = card;
@@ -580,11 +617,6 @@ function pickNextCard() {
   state.currentFieldIndex = 0;
   state.answerOpen = false;
   state.multiAnswered = false;
-
-  // For multi-choice: byg svarmuligheder
-  if (state.gameType === "multi") {
-    state.multiChoices = buildMultiChoices(card);
-  }
 
   if (!state.currentFields.length) {
     state.currentFields = [{ type: "text", label: "Info", text: "Ingen data for denne art." }];
@@ -847,84 +879,128 @@ function updateScore() {
 // =============================================================================
 
 /**
- * Byg 3 valgmuligheder: 1 rigtig + 2 fra samme familie. Fallback: tilfældige.
+ * Tjek om en art har nok distractors til multi-choice (mindst 2):
+ *   - først fra samme slægt (samme niveau)
+ *   - hvis ikke nok: fra samme familie
+ * Bruges som forfilter ved spil-start.
+ */
+function hasEnoughDistractors(card, allArter) {
+  const correctTitle = card.Title;
+  const niveau = card.niveau;
+  const sl = card.slægt;
+  const fam = card.familie || card.Familie;
+
+  let count = 0;
+  if (sl) {
+    for (const a of allArter) {
+      if (a.Title !== correctTitle && a.niveau === niveau && a.slægt === sl) {
+        count++;
+        if (count >= 2) return true;
+      }
+    }
+  }
+  if (fam) {
+    for (const a of allArter) {
+      if (a.Title === correctTitle) continue;
+      if (a.niveau !== niveau) continue;
+      if (sl && a.slægt === sl) continue;  // allerede talt
+      const af = a.familie || a.Familie;
+      if (af === fam) {
+        count++;
+        if (count >= 2) return true;
+      }
+    }
+  }
+  return false;
+}
+
+
+/**
+ * Byg 3 valgmuligheder: 1 rigtig + 2 distractors.
+ * Strikst prioritet: først samme slægt, derefter familie.
+ * Aldrig tilfældige fra hele datasættet.
  */
 function buildMultiChoices(card) {
   const { arter } = getData();
   const correctTitle = card.Title;
-  const familie = card.familie || card.Familie;
+  const niveau = card.niveau;
+  const sl = card.slægt;
+  const fam = card.familie || card.Familie;
 
-  let candidates = [];
-  if (familie) {
-    candidates = arter.filter(a =>
-      (a.familie || a.Familie) === familie &&
+  // Først: samme slægt
+  let distractorCandidates = [];
+  if (sl) {
+    distractorCandidates = arter.filter(a =>
       a.Title !== correctTitle &&
-      a.niveau === card.niveau   // bland ikke arter og slægter sammen
+      a.niveau === niveau &&
+      a.slægt === sl
     );
   }
 
-  // Fallback: tilfældige hvis ikke nok i familien
-  if (candidates.length < 2) {
-    const others = arter.filter(a =>
-      a.Title !== correctTitle &&
-      a.niveau === card.niveau
+  // Bland og tag op til 2 fra slægten
+  let chosen = shuffle(distractorCandidates).slice(0, 2);
+
+  // Hvis ikke nok i slægten, suppler fra familien (uden dubletter)
+  if (chosen.length < 2 && fam) {
+    const usedTitles = new Set(chosen.map(a => a.Title));
+    usedTitles.add(correctTitle);
+    const familieCandidates = arter.filter(a =>
+      a.niveau === niveau &&
+      !usedTitles.has(a.Title) &&
+      (a.familie || a.Familie) === fam
     );
-    const need = 2 - candidates.length;
-    const extras = shuffle(others).slice(0, need);
-    candidates = candidates.concat(extras);
+    const need = 2 - chosen.length;
+    chosen = chosen.concat(shuffle(familieCandidates).slice(0, need));
   }
 
-  // Vælg 2 distractors
-  const distractors = shuffle(candidates).slice(0, 2);
+  // Hvis vi stadig ikke har 2 (skulle ikke ske pga. hasEnoughDistractors-filter,
+  // men sikkerhed): returnér null så caller kan springe over
+  if (chosen.length < 2) {
+    return null;
+  }
 
   // Saml + bland
   const choices = [
     { title: correctTitle, correct: true },
-    { title: distractors[0]?.Title || "?", correct: false },
-    { title: distractors[1]?.Title || "?", correct: false },
+    { title: chosen[0].Title, correct: false },
+    { title: chosen[1].Title, correct: false },
   ];
   return shuffle(choices);
 }
 
 
-function renderMultiChoiceGame(container) {
-  container.innerHTML = `
-    <div class="view view-training-active">
-      <header class="topbar">
-        <a href="#/training" class="topbar-back">← Skift</a>
-        <h1 class="topbar-title">${gameTypeLabel("multi")}${state.hardOnly ? " · Svære" : ""}</h1>
-        <button id="markHardBtn" class="hard-toggle" aria-label="Marker som svær">☆</button>
-      </header>
-
-      <main class="training-main">
-        <div class="train-card" id="trainCard">
-          <div class="score-badge" id="scoreBadge">0/0</div>
-          <div class="train-field-label" id="fieldLabel"></div>
-          <div class="train-field-content" id="fieldContent"></div>
-          <div class="train-hint" id="trainHint">Tap for næste felt — vælg svaret nedenfor</div>
-        </div>
-
-        <div class="multi-choices" id="multiChoices"></div>
-      </main>
-    </div>
-  `;
-
-  bindMultiChoiceGame();
-  renderCurrentField();
-  renderMultiChoices();
-  updateScore();
-  updateHardToggle();
-}
-
-
 function bindMultiChoiceGame() {
+  // Multi bruger SAMME card-interaktion som klassisk mode (klik = næste felt,
+  // dobbeltklik = åbn svarmuligheder), plus knapperne.
   const cardEl = document.getElementById("trainCard");
   const contentEl = document.getElementById("fieldContent");
 
-  // Klik på kort = næste felt (kort-rotation)
+  let clickTimer = null;
   cardEl.addEventListener("click", e => {
     if (e.target.closest("button")) return;
-    nextField();
+    if (clickTimer) {
+      clearTimeout(clickTimer);
+      clickTimer = null;
+      openMultiModal();
+      return;
+    }
+    clickTimer = setTimeout(() => {
+      clickTimer = null;
+      nextField();
+    }, 220);
+  });
+
+  document.getElementById("prevFieldBtn").addEventListener("click", prevField);
+  document.getElementById("nextFieldBtn").addEventListener("click", nextField);
+
+  // Vis svarmuligheder-knap
+  document.getElementById("showAnswerBtn").addEventListener("click", () => {
+    openMultiModal();
+  });
+
+  // Luk-knap
+  document.getElementById("closeMultiBtn").addEventListener("click", () => {
+    closeMultiModal();
   });
 
   document.getElementById("markHardBtn").addEventListener("click", () => {
@@ -933,9 +1009,23 @@ function bindMultiChoiceGame() {
     updateHardToggle();
   });
 
-  // Swipe kun for felt-rotation (venstre/højre)
-  // Multi-choice bruger ikke op/ned for rigtig/forkert
+  // Swipe venstre/højre for felt — ingen op/ned (det giver ikke mening i multi)
   setupSimpleSwipe(cardEl, contentEl);
+}
+
+
+function openMultiModal() {
+  const modal = document.getElementById("multiModal");
+  if (!modal) return;
+  modal.classList.remove("hidden");
+  state.multiAnswered = false;
+  renderMultiChoices();
+}
+
+
+function closeMultiModal() {
+  const modal = document.getElementById("multiModal");
+  if (modal) modal.classList.add("hidden");
 }
 
 
@@ -1004,11 +1094,9 @@ function handleMultiChoiceClick(chosenIdx) {
 
   // Vent et øjeblik så brugeren kan se feedback, gå så videre
   setTimeout(() => {
+    closeMultiModal();
     recordAnswer(correct);
-    if (state.currentCard) {
-      renderMultiChoices();
-    }
-  }, 1200);
+  }, 1400);
 }
 
 

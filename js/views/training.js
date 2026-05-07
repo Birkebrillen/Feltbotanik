@@ -334,9 +334,13 @@ function renderActiveGame(container) {
 
       ${isMulti ? `
         <div id="multiModal" class="answer-modal hidden">
-          <div class="answer-modal-content multi-modal-content">
+          <div class="answer-modal-content multi-modal-content"
+               style="width: min(94vw, 560px); max-height: 90vh; padding: 2.5rem 1.5rem 2rem; box-sizing: border-box;">
             <button id="closeMultiBtn" class="answer-close" aria-label="Luk svarmuligheder">×</button>
-            <h2 class="multi-modal-title">Hvilken art er det?</h2>
+            <h2 class="multi-modal-title"
+                style="text-align: center; margin: 0 0 2rem; font-size: 1.15rem; font-weight: 500; color: #8a6d3b; letter-spacing: 0.5px;">
+              Hvilken art er det?
+            </h2>
             <div id="multiChoices" class="multi-choices"></div>
           </div>
         </div>
@@ -1057,8 +1061,37 @@ function setupSimpleSwipe(cardEl, contentEl) {
 function renderMultiChoices() {
   const wrap = document.getElementById("multiChoices");
   if (!wrap) return;
+
+  // Inline CSS for layout — robust mod cache og overstyrings-konflikter
+  wrap.style.cssText = `
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 1.25rem !important;
+    width: 100% !important;
+  `;
+
+  const btnStyle = `
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 5rem;
+    padding: 1.5rem 1.25rem;
+    font-family: inherit;
+    font-size: 1.6rem;
+    font-weight: 600;
+    line-height: 1.2;
+    background: #f5efe2;
+    color: #3d2e1c;
+    border: 2px solid #b8a989;
+    border-radius: 10px;
+    cursor: pointer;
+    text-align: center;
+    transition: background 0.15s, border-color 0.15s, color 0.15s, transform 0.1s;
+  `;
+
   wrap.innerHTML = state.multiChoices.map((c, i) => `
-    <button type="button" class="multi-choice-btn" data-idx="${i}">
+    <button type="button" class="multi-choice-btn" data-idx="${i}"
+            style="${btnStyle}">
       ${escapeHtml(c.title)}
     </button>
   `).join("");
@@ -1081,14 +1114,24 @@ function handleMultiChoiceClick(chosenIdx) {
   const chosen = state.multiChoices[chosenIdx];
   const correct = chosen.correct;
 
-  // Markér visuelt: grøn for rigtigt svar, rød for forkert valgt
+  // Markér visuelt med inline styles (robust mod CSS-konflikter)
   buttons.forEach((btn, i) => {
     const c = state.multiChoices[i];
     btn.disabled = true;
+    btn.style.cursor = "default";
     if (c.correct) {
+      btn.style.background = "#c5e0b3";
+      btn.style.borderColor = "#5b8a4a";
+      btn.style.color = "#243d18";
       btn.classList.add("multi-choice-correct");
     } else if (i === chosenIdx) {
+      btn.style.background = "#ecbcbc";
+      btn.style.borderColor = "#a64a4a";
+      btn.style.color = "#4a1818";
       btn.classList.add("multi-choice-wrong");
+    } else {
+      // Andre forkerte (uvalgte) — dæmp dem en smule
+      btn.style.opacity = "0.6";
     }
   });
 
